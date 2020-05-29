@@ -1,0 +1,252 @@
+---
+title: "Shiny Sentiment Analysis of Amazon Alexa Reviews"
+author: "Sakti(123170031) dan Rifky(123170032)"
+date: "5/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**`global`**
+```{r global}
+library(dplyr)
+library(vroom)
+library(here)
+library(tidyverse)
+library(ggplot2)
+library(plotly)
+library(tidytext)
+library(wordcloud)
+library(reshape2)
+library(shiny)
+
+# Source data from https://www.kaggle.com/sid321axn/amazon-alexa-reviews
+alexa = vroom(here("amazon_alexa.tsv"), delim = "\t")
+option_variation = unique(alexa$variation)
+
+count_reviews = function() {
+  alexa %>%
+    nrow()
+}
+
+count_sentiments = function(x) {
+  sentiment_alexa = score_sentiment(alexa)
+  
+  if (x == "positive") {
+    sentiment_alexa %>% filter(score > 0) %>% nrow()
+  } else if (x == "negative") {
+    sentiment_alexa %>% filter(score < 0) %>% nrow()
+  } else {
+    sentiment_alexa %>% filter(score == 0) %>% nrow()
+  }
+  
+}
+
+score_sentiment = function(data) {
+  
+  sentences = data$verified_reviews
+  
+  scores = plyr::laply(sentences, function(sentence) {
+    sentiment_word = get_sentiments("bing")
+    posi = sentiment_word %>% filter(sentiment == "positive")
+    negi = sentiment_word %>% filter(sentiment == "negative")
+    result_words = str_split(sentence, '\\s+')
+    list_words = unlist(result_words)
+    list_words = tolower(list_words)
+    pos = match(list_words, posi$word)
+    neg = match(list_words, negi$word)
+    pos = !is.na(pos)
+    neg = !is.na(neg)
+    score = sum(pos) - sum(neg)
+    return(score)
+  })
+  
+  result = data.frame(variation = data$variation, text = sentences, score = scores)
+  return(result)
+}
+
+table_alexa = function(variation_choice) {
+  sentiment_alexa = score_sentiment(alexa)
+  
+  if (sentiment_alexa$variation %in% variation_choice) {
+    sentiment_alexa %>%
+      mutate(Sentiment = case_when(
+        score > 0 ~ "Positive",
+        score < 0 ~ "Negative",
+        TRUE ~ "Neutral"
+      )) %>%
+      filter(variation %in% variation_choice)
+  } else {
+    sentiment_alexa %>%
+      mutate(Sentiment = case_when(
+        score > 0 ~ "Positive",
+        score < 0 ~ "Negative",
+        TRUE ~ "Neutral"
+      ))
+  }
+  
+}
+```
+
+**`ui`**
+```{r ui}
+ui = fluidPage(
+  title = "Sentiment Analysis of Amazon Alexa Reviews",
+  headerPanel("Sentiment Analysis of Amazon Alexa Reviews"),
+  
+  fluidRow(
+    column(
+      3,
+      h3("Total Reviews"),
+      h4(strong(textOutput(outputId = "total_reviews")))
+    ),
+    column(
+      3,
+      h3("Positive Sentiments"),
+      h4(strong(textOutput(outputId = "total_positive")))
+    ),
+    column(
+      3,
+      h3("Negative Sentiments"),
+      h4(strong(textOutput(outputId = "total_negative")))
+    ),column(
+      3,
+      h3("Neutral Sentiments"),
+      h4(strong(textOutput(outputId = "total_neutral")))
+    )
+  ),
+  hr(),
+
+  fluidPage(
+    plotlyOutput(outputId = "plot_word_freq", height = "700px")
+  ),
+  hr(),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(
+        inputId = "variation",
+        label = "Variation of Alexa Model",
+        choices = option_variation,
+        multiple = TRUE,
+        selected = option_variation[[1]]
+      )
+    ),
+    mainPanel(
+      plotlyOutput(outputId = "plot_word_usage", height = "700px"),
+      h3("Words Cloud", align = "center"),
+      plotOutput(outputId = "plot_word_cloud", height = "1200px")
+    )
+  ),
+  hr(),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(
+        inputId = "variation_table",
+        label = "Variation of Alexa Model for Table",
+        choices = option_variation,
+        multiple = TRUE,
+        selected = option_variation[[1]]
+      )
+    ),
+    mainPanel(
+      h3("List Reviews from Alexa"),
+      tableOutput(outputId = "plot_reviews")
+    )
+  )
+)
+```
+
+**`server`**
+```{r server}
+server = function(input, output, session) {
+  plot_word_freq = reactive({
+    alexa %>% 
+      group_by(variation) %>%
+      unnest_tokens(word, verified_reviews) %>%
+      group_by(variation) %>%
+      anti_join(stop_words) %>%
+      count(word, sort = T) %>%
+      na.omit() %>%
+      filter(n >= 30) %>%
+      ggplot(aes(x = reorder(word, n), y = n, fill = variation)) +
+        geom_bar(stat = "identity") +
+        coord_flip() +
+        labs(
+          x = "Words",
+          y = "Frequency",
+          title = "Word Frequency Graphic"
+        ) +
+        theme_light()
+  })
+  
+  output$plot_word_freq = renderPlotly({
+    ggplotly(plot_word_freq())
+  })
+  
+  plot_word_usage = reactive({
+    alexa %>%
+      filter(variation %in% input$variation) %>%
+      unnest_tokens(word, verified_reviews) %>%
+      anti_join(stop_words) %>%
+      inner_join(get_sentiments("bing")) %>%
+      group_by(sentiment, variation) %>%
+      count(word) %>%
+      top_n(10) %>%
+      ggplot(aes(x = reorder(word, n), y = n, fill = variation)) +
+        geom_col(show.legend = T) +
+        coord_flip() +
+        facet_wrap(~sentiment, scales = "free_y") +
+        labs(
+          x = "Words",
+          y = "Frequency",
+          title = "Word Usage Graphic"
+        ) +
+        theme_light()
+  })
+  
+  output$plot_word_usage = renderPlotly({
+    ggplotly(plot_word_usage())
+  })
+
+  output$plot_word_cloud = renderPlot({
+    alexa %>%
+      filter(variation %in% input$variation) %>%
+      unnest_tokens(word, verified_reviews) %>%
+      anti_join(stop_words) %>%
+      inner_join(get_sentiments("bing")) %>%
+      count(word, sentiment) %>% 
+      acast(word~sentiment, value.var = "n", fill = 0) %>% 
+      comparison.cloud(colors = c("#1b2a49", "#00909e"), max.words = 200, scale = c(4,1))
+  })
+  
+  output$total_reviews = renderText({
+    count_reviews()
+  })
+  
+  output$total_positive = renderText({
+    count_sentiments("positive")
+  })
+  
+  output$total_negative = renderText({
+    count_sentiments("negative")
+  })
+  
+  output$total_neutral = renderText({
+    count_sentiments("neutral")
+  })
+  
+  output$plot_reviews = renderTable({
+    table_alexa(input$variation_table)
+  })
+}
+```
+
+**`run-app`**
+```{r run-app}
+shinyApp(ui = ui, server = server)
+```
+
